@@ -4,12 +4,8 @@ import json
 import os
 
 # --------------------------------------------------
-# 1️⃣ STREAMLIT SERVER CONFIG (1 GB UPLOAD)
+# 1️⃣ PAGE CONFIG
 # --------------------------------------------------
-# This MUST be set before file_uploader is used
-# Works only for local / self-hosted Streamlit
-st.set_option("server.maxUploadSize", 1024)  # MB → 1 GB
-
 st.set_page_config(
     page_title="mycloud GSTR Reconciliation",
     layout="wide"
@@ -25,7 +21,7 @@ try:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 except Exception as e:
-    st.error("❌ Failed to load configuration file")
+    st.error("❌ Unable to load configuration file (gst_reconciliation_config.json)")
     st.exception(e)
     st.stop()
 
@@ -33,7 +29,14 @@ except Exception as e:
 # 3️⃣ APP HEADER
 # --------------------------------------------------
 st.title(config["app_meta"]["app_name"])
-st.caption("Self-hosted Streamlit | Large PDF enabled (up to 1 GB)")
+st.caption("Streamlit Cloud | GST Reconciliation")
+
+st.info(
+    "📌 **Upload limits (Streamlit Cloud)**\n\n"
+    "- GST Export PDF: **Maximum 300 MB**\n"
+    "- GSTR-1 Excel / CSV: **Maximum 10 MB**\n\n"
+    "For larger PDFs, please use cloud storage (S3 / Azure Blob)."
+)
 
 st.divider()
 
@@ -46,42 +49,59 @@ col1, col2 = st.columns(2)
 
 with col1:
     gstr1_file = st.file_uploader(
-        "Upload GSTR-1 Excel / CSV",
-        type=["csv", "xlsx"],
-        help="Upload GSTR-1 return file"
+        "Upload GSTR-1 Excel / CSV (≤ 10 MB)",
+        type=["csv", "xlsx"]
     )
 
 with col2:
     gst_pdf_file = st.file_uploader(
-        "Upload GST Export PDF (up to 1 GB)",
-        type=["pdf"],
-        help="Large PDF supported ONLY on self-hosted Streamlit"
+        "Upload GST Export PDF (≤ 300 MB)",
+        type=["pdf"]
     )
 
-# --------------------------------------------------
-# 5️⃣ VALIDATION
-# --------------------------------------------------
 if not gstr1_file or not gst_pdf_file:
-    st.info("Please upload **both** GSTR-1 Excel and GST Export PDF to continue.")
+    st.info("Please upload **both** files to proceed.")
     st.stop()
 
-st.success("✅ Files uploaded successfully")
+# --------------------------------------------------
+# 5️⃣ FILE SIZE VALIDATION (CLOUD-SAFE)
+# --------------------------------------------------
+EXCEL_LIMIT_MB = 10
+PDF_LIMIT_MB = 300
 
-# --------------------------------------------------
-# 6️⃣ FILE SIZE DISPLAY (DEBUG / CONFIDENCE)
-# --------------------------------------------------
+excel_size_mb = len(gstr1_file.getbuffer()) / (1024 * 1024)
 pdf_size_mb = len(gst_pdf_file.getbuffer()) / (1024 * 1024)
 
-st.write(f"📄 **GST PDF Size:** {pdf_size_mb:.2f} MB")
-
-if pdf_size_mb > 1024:
-    st.error("❌ PDF exceeds 1 GB limit even for self-hosted setup.")
+if excel_size_mb > EXCEL_LIMIT_MB:
+    st.error(
+        f"❌ GSTR-1 Excel file is too large ({excel_size_mb:.2f} MB).\n\n"
+        f"Maximum allowed size is {EXCEL_LIMIT_MB} MB."
+    )
     st.stop()
 
+if pdf_size_mb > PDF_LIMIT_MB:
+    st.error(
+        f"❌ GST Export PDF is too large ({pdf_size_mb:.2f} MB).\n\n"
+        f"Maximum allowed size is {PDF_LIMIT_MB} MB.\n\n"
+        "👉 Please split the PDF or upload via cloud storage."
+    )
+    st.stop()
+
+st.success(
+    f"✅ Files accepted\n\n"
+    f"- Excel size: {excel_size_mb:.2f} MB\n"
+    f"- PDF size: {pdf_size_mb:.2f} MB"
+)
+
+st.divider()
+
 # --------------------------------------------------
-# 7️⃣ PLACEHOLDER RECON LOGIC (SAFE DEMO)
+# 6️⃣ RECONCILIATION LOGIC (TEMPORARY DEMO DATA)
 # --------------------------------------------------
-# NOTE: We will replace this with real Excel + PDF parsing later
+# NOTE:
+# This is SAMPLE data only.
+# These values WILL change dynamically once
+# real Excel & PDF parsing is implemented.
 
 data = [
     ["Total Taxable Value", 35842919.18, 35842919.18, "Aggregated HSN Taxable Value", "Matched", 0],
@@ -101,13 +121,13 @@ df = pd.DataFrame(
 )
 
 # --------------------------------------------------
-# 8️⃣ OUTPUT TABLE
+# 7️⃣ OUTPUT TABLE
 # --------------------------------------------------
 st.subheader("Reconciliation Summary")
 st.dataframe(df, use_container_width=True)
 
 # --------------------------------------------------
-# 9️⃣ EXPLANATION NOTES
+# 8️⃣ EXPLANATION NOTES
 # --------------------------------------------------
 st.subheader("Explanation Notes")
 
@@ -118,5 +138,5 @@ st.warning(config["explanation_notes"]["advance_difference"])
 st.success(config["final_conclusion"])
 
 # --------------------------------------------------
-# 🔚 END OF APP
+# 🔚 END OF APPLICATION
 # --------------------------------------------------
