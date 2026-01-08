@@ -15,13 +15,18 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# 2️⃣ LOAD CONFIG
+# 2️⃣ LOAD CONFIG SAFELY
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(BASE_DIR, "gst_reconciliation_config.json")
 
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    config = json.load(f)
+try:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = json.load(f)
+except Exception as e:
+    st.error("❌ Failed to load gst_reconciliation_config.json")
+    st.exception(e)
+    st.stop()
 
 # --------------------------------------------------
 # 3️⃣ HEADER
@@ -70,10 +75,6 @@ st.divider()
 # 6️⃣ SAFE HELPERS
 # --------------------------------------------------
 def safe_number(value):
-    """
-    Converts Excel/PDF cell values safely to float.
-    Handles commas, ₹, blanks, hyphens, text.
-    """
     try:
         if pd.isna(value):
             return 0.0
@@ -150,7 +151,7 @@ def parse_gstr1_excel(file):
     return {k: round(v, 2) for k, v in totals.items()}
 
 # --------------------------------------------------
-# 9️⃣ PDF PARSER (TEXT-BASED SAFE)
+# 9️⃣ PDF PARSER (CLOUD-SAFE)
 # --------------------------------------------------
 def extract_amount(pattern, text):
     match = re.search(pattern, text, re.IGNORECASE)
@@ -209,16 +210,14 @@ st.write(f"**GSTIN:** {gstin}")
 st.write(f"**Return Period:** {period}")
 
 # --------------------------------------------------
-# 12️⃣ BUILD RECON TABLE
+# 12️⃣ BUILD TABLE
 # --------------------------------------------------
 rows = []
 
 for comp in config["reconciliation_components"]:
     key = comp["key"]
-
     excel_value = excel_totals.get(key, 0)
     pdf_value = pdf_totals.get(key, 0)
-
     discrepancy = round(abs(excel_value - pdf_value), 2)
     status = "Matched" if discrepancy == 0 else "Difference"
 
@@ -237,7 +236,7 @@ st.subheader("Reconciliation Summary")
 st.dataframe(df, use_container_width=True)
 
 # --------------------------------------------------
-# 13️⃣ DOWNLOAD EXCEL
+# 13️⃣ DOWNLOAD
 # --------------------------------------------------
 def build_download(df):
     buffer = BytesIO()
