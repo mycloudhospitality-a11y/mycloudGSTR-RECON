@@ -1,8 +1,10 @@
 import streamlit as st
-import pandas toggle
+import pandas as pd
 import json
 import os
-import pandas as pd
+from io import BytesIO
+import re
+import pdfplumber
 
 # --------------------------------------------------
 # 1️⃣ PAGE CONFIG
@@ -13,7 +15,7 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# 2️⃣ LOAD CONFIG
+# 2️⃣ LOAD JSON CONFIG
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(BASE_DIR, "gst_reconciliation_config.json")
@@ -29,9 +31,9 @@ st.caption("Multi-hotel | Multi-month | File-driven reconciliation")
 
 st.info(
     "📌 Upload limits (Streamlit Cloud)\n\n"
-    "- GSTR-1 Excel / CSV: **≤ 10 MB**\n"
+    "- GSTR-1 Excel: **≤ 10 MB**\n"
     "- GST Export PDF: **≤ 300 MB**\n\n"
-    "Each upload is processed independently. No data is reused."
+    "Each upload is processed independently."
 )
 
 st.divider()
@@ -43,8 +45,8 @@ col1, col2 = st.columns(2)
 
 with col1:
     gstr1_file = st.file_uploader(
-        "Upload GSTR-1 Excel / CSV (≤ 10 MB)",
-        type=["xlsx", "csv"]
+        "Upload GSTR-1 Excel (≤ 10 MB)",
+        type=["xlsx"]
     )
 
 with col2:
@@ -59,28 +61,41 @@ if not gstr1_file or not gst_pdf_file:
 # --------------------------------------------------
 # 5️⃣ FILE SIZE VALIDATION
 # --------------------------------------------------
-EXCEL_LIMIT_MB = 10
-PDF_LIMIT_MB = 300
-
-excel_size_mb = len(gstr1_file.getbuffer()) / (1024 * 1024)
-pdf_size_mb = len(gst_pdf_file.getbuffer()) / (1024 * 1024)
-
-if excel_size_mb > EXCEL_LIMIT_MB:
-    st.error(f"❌ Excel file too large ({excel_size_mb:.2f} MB). Max allowed is 10 MB.")
+if len(gstr1_file.getbuffer()) / (1024 * 1024) > 10:
+    st.error("❌ Excel file exceeds 10 MB limit.")
     st.stop()
 
-if pdf_size_mb > PDF_LIMIT_MB:
-    st.error(f"❌ PDF file too large ({pdf_size_mb:.2f} MB). Max allowed is 300 MB.")
+if len(gst_pdf_file.getbuffer()) / (1024 * 1024) > 300:
+    st.error("❌ PDF file exceeds 300 MB limit.")
     st.stop()
 
-st.success(
-    f"Files accepted | Excel: {excel_size_mb:.2f} MB | PDF: {pdf_size_mb:.2f} MB"
-)
-
+st.success("Files accepted successfully")
 st.divider()
 
 # --------------------------------------------------
-# 6️⃣ GSTR-1 EXCEL PARSER (FORMAT-LOCKED & CORRECT)
+# 6️⃣ METADATA EXTRACTION (HOTEL, GSTIN, PERIOD)
+# --------------------------------------------------
+def extract_metadata(file):
+    xls = pd.ExcelFile(file)
+    df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=None)
+
+    hotel, gstin, period = "Unknown", "Unknown", "Unknown"
+
+    for i in range(10):
+        for j in range(6):
+            cell = str(df.iloc[i, j]).lower()
+
+            if "legal name" in cell or "trade name" in cell:
+                hotel = str(df.iloc[i, j + 1]).strip()
+            if "gstin" in cell:
+                gstin = str(df.iloc[i, j + 1]).strip()
+            if "return period" in cell:
+                period = str(df.iloc[i, j + 1]).strip()
+
+    return hotel, gstin, period
+
+# --------------------------------------------------
+# 7️⃣ GSTR-1 EXCEL PARSER (FORMAT-LOCKED)
 # --------------------------------------------------
 def parse_gstr1_excel(file):
     xls = pd.ExcelFile(file)
@@ -97,97 +112,99 @@ def parse_gstr1_excel(file):
         "advances_adjusted": 0.0
     }
 
-    # HSN SUMMARY
     if "hsn" in xls.sheet_names:
-        df_hsn = pd.read_excel(xls, sheet_name="hsn", header=None)
+        df = pd.read_excel(xls, "hsn", header=None)
+        totals["total_invoice_value"] = float(df.iloc[1, 3])
+        totals["total_taxable_value"] = float(df.iloc[1, 4])
+        totals["igst_amount"] = float(df.iloc[1, 6])
+        totals["cgst_amount"] = float(df.iloc[1, 7])
+        totals["sgst_amount"] = float(df.iloc[1, 8])
+        totals["total_cess"] = float(df.iloc[1, 9])
 
-        totals["total_invoice_value"] = float(df_hsn.iloc[1, 3])
-        totals["total_taxable_value"] = float(df_hsn.iloc[1, 4])
-        totals["igst_amount"] = float(df_hsn.iloc[1, 6])
-        totals["cgst_amount"] = float(df_hsn.iloc[1, 7])
-        totals["sgst_amount"] = float(df_hsn.iloc[1, 8])
-        totals["total_cess"] = float(df_hsn.iloc[1, 9])
-
-    # B2B SUMMARY
     if "b2b" in xls.sheet_names:
-        df_b2b = pd.read_excel(xls, sheet_name="b2b", header=None)
-        totals["b2b_taxable_value"] = float(df_b2b.iloc[1, 11])
+        df = pd.read_excel(xls, "b2b", header=None)
+        totals["b2b_taxable_value"] = float(df.iloc[1, 11])
 
-    # EXEMPT / NON-GST
     if "exemp" in xls.sheet_names:
-        df_ex = pd.read_excel(xls, sheet_name="exemp", header=None)
-        totals["exempted_non_gst"] = float(df_ex.iloc[1, 3])
+        df = pd.read_excel(xls, "exemp", header=None)
+        totals["exempted_non_gst"] = float(df.iloc[1, 3])
 
-    # ADVANCE ADJUSTED
     if "atadj" in xls.sheet_names:
-        df_adv = pd.read_excel(xls, sheet_name="atadj", header=None)
-        totals["advances_adjusted"] = float(df_adv.iloc[1, 3])
+        df = pd.read_excel(xls, "atadj", header=None)
+        totals["advances_adjusted"] = float(df.iloc[1, 3])
 
     return {k: round(v, 2) for k, v in totals.items()}
 
 # --------------------------------------------------
-# 7️⃣ GST PDF PARSER (INTENTIONALLY PENDING)
+# 8️⃣ BASIC PDF VALUE EXTRACTION (TEXT-BASED)
 # --------------------------------------------------
-def parse_gst_pdf(_file):
-    """
-    PDF table extraction will be added later (Camelot / Tabula).
-    Returning None avoids false 'Matched = 0' results.
-    """
-    return {
-        "total_taxable_value": None,
-        "b2b_taxable_value": None,
-        "cgst_amount": None,
-        "sgst_amount": None,
-        "igst_amount": None,
-        "total_cess": None,
-        "total_invoice_value": None,
-        "exempted_non_gst": None,
-        "advances_adjusted": None
-    }
+def extract_amount(pattern, text):
+    match = re.search(pattern, text, re.IGNORECASE)
+    return float(match.group(1).replace(",", "")) if match else 0.0
+
+def parse_gst_pdf(file):
+    totals = {k: 0.0 for k in [
+        "total_taxable_value", "cgst_amount", "sgst_amount",
+        "igst_amount", "total_cess"
+    ]}
+
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            totals["total_taxable_value"] += extract_amount(r"taxable value\s*₹?\s*([\d,]+\.\d+)", text)
+            totals["cgst_amount"] += extract_amount(r"cgst\s*₹?\s*([\d,]+\.\d+)", text)
+            totals["sgst_amount"] += extract_amount(r"sgst\s*₹?\s*([\d,]+\.\d+)", text)
+            totals["igst_amount"] += extract_amount(r"igst\s*₹?\s*([\d,]+\.\d+)", text)
+            totals["total_cess"] += extract_amount(r"cess\s*₹?\s*([\d,]+\.\d+)", text)
+
+    totals["b2b_taxable_value"] = totals["total_taxable_value"]
+    totals["total_invoice_value"] = (
+        totals["total_taxable_value"]
+        + totals["cgst_amount"]
+        + totals["sgst_amount"]
+        + totals["igst_amount"]
+        + totals["total_cess"]
+    )
+
+    return {k: round(v, 2) for k, v in totals.items()}
 
 # --------------------------------------------------
-# 8️⃣ PROCESSING STATE
+# 9️⃣ PROCESSING STATE
 # --------------------------------------------------
-with st.spinner("🔄 Reconciling GSTR-1 with GST Export… Please wait"):
-    progress = st.progress(0)
-
-    progress.progress(20)
+with st.spinner("🔄 Reconciling data… Please wait"):
+    hotel, gstin, period = extract_metadata(gstr1_file)
     excel_totals = parse_gstr1_excel(gstr1_file)
-
-    progress.progress(60)
     pdf_totals = parse_gst_pdf(gst_pdf_file)
 
-    progress.progress(100)
-
 st.success("✅ Reconciliation completed")
-
 st.divider()
 
 # --------------------------------------------------
-# 9️⃣ BUILD RECON TABLE
+# 🔟 HEADER INFO
+# --------------------------------------------------
+st.subheader("Hotel Details")
+st.write(f"**Hotel Name:** {hotel}")
+st.write(f"**GSTIN:** {gstin}")
+st.write(f"**Return Period:** {period}")
+
+# --------------------------------------------------
+# 11️⃣ BUILD RECON TABLE
 # --------------------------------------------------
 rows = []
 
 for comp in config["reconciliation_components"]:
     key = comp["key"]
 
-    excel_value = excel_totals.get(key)
-    pdf_value = pdf_totals.get(key)
+    excel_value = excel_totals.get(key, 0)
+    pdf_value = pdf_totals.get(key, 0)
 
-    if pdf_value is None:
-        status = "Pending PDF Mapping"
-        discrepancy = ""
-    else:
-        discrepancy = round(abs(excel_value - pdf_value), 2)
-        if comp["match_type"] == "exact":
-            status = "Matched" if discrepancy == 0 else "Difference"
-        else:
-            status = "Difference" if discrepancy != 0 else "Matched"
+    discrepancy = round(abs(excel_value - pdf_value), 2)
+    status = "Matched" if discrepancy == 0 else "Difference"
 
     rows.append([
         comp["label"],
         excel_value,
-        pdf_value if pdf_value is not None else "—",
+        pdf_value,
         comp["logic"],
         status,
         discrepancy
@@ -195,14 +212,21 @@ for comp in config["reconciliation_components"]:
 
 df = pd.DataFrame(rows, columns=config["output_table"]["columns"])
 
-# --------------------------------------------------
-# 🔟 DISPLAY OUTPUT
-# --------------------------------------------------
 st.subheader("Reconciliation Summary")
 st.dataframe(df, use_container_width=True)
 
-st.subheader("Explanation Notes")
-st.info("Matched → Excel and PDF values are identical.")
-st.warning("Pending PDF Mapping → PDF extraction logic will be added next.")
+# --------------------------------------------------
+# 12️⃣ DOWNLOAD RECONCILIATION EXCEL
+# --------------------------------------------------
+def download_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Reconciliation")
+    return output.getvalue()
 
-st.success("Reconciliation is generated dynamically per hotel and per month.")
+st.download_button(
+    "⬇️ Download Reconciliation Excel",
+    data=download_excel(df),
+    file_name=f"GSTR_Reconciliation_{gstin}_{period}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
