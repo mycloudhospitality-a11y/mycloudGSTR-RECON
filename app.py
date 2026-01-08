@@ -1,20 +1,19 @@
 import streamlit as st
-import pandas as pd
+import pandas toggle
 import json
 import os
-import pdfplumber
-import re
+import pandas as pd
 
 # --------------------------------------------------
 # 1️⃣ PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(
-    page_title="mycloud GSTR Reconciliation",
+    page_title="mycloud GSTR-1 Reconciliation",
     layout="wide"
 )
 
 # --------------------------------------------------
-# 2️⃣ LOAD JSON CONFIG
+# 2️⃣ LOAD CONFIG
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(BASE_DIR, "gst_reconciliation_config.json")
@@ -30,8 +29,8 @@ st.caption("Multi-hotel | Multi-month | File-driven reconciliation")
 
 st.info(
     "📌 Upload limits (Streamlit Cloud)\n\n"
-    "- GST Export PDF: **≤ 300 MB**\n"
-    "- GSTR-1 Excel / CSV: **≤ 10 MB**\n\n"
+    "- GSTR-1 Excel / CSV: **≤ 10 MB**\n"
+    "- GST Export PDF: **≤ 300 MB**\n\n"
     "Each upload is processed independently. No data is reused."
 )
 
@@ -67,21 +66,24 @@ excel_size_mb = len(gstr1_file.getbuffer()) / (1024 * 1024)
 pdf_size_mb = len(gst_pdf_file.getbuffer()) / (1024 * 1024)
 
 if excel_size_mb > EXCEL_LIMIT_MB:
-    st.error(f"❌ Excel too large ({excel_size_mb:.2f} MB). Max 10 MB.")
+    st.error(f"❌ Excel file too large ({excel_size_mb:.2f} MB). Max allowed is 10 MB.")
     st.stop()
 
 if pdf_size_mb > PDF_LIMIT_MB:
-    st.error(f"❌ PDF too large ({pdf_size_mb:.2f} MB). Max 300 MB.")
+    st.error(f"❌ PDF file too large ({pdf_size_mb:.2f} MB). Max allowed is 300 MB.")
     st.stop()
 
-st.success(f"Files accepted | Excel: {excel_size_mb:.2f} MB | PDF: {pdf_size_mb:.2f} MB")
+st.success(
+    f"Files accepted | Excel: {excel_size_mb:.2f} MB | PDF: {pdf_size_mb:.2f} MB"
+)
+
 st.divider()
 
 # --------------------------------------------------
-# 6️⃣ GSTR-1 EXCEL PARSING (REAL)
+# 6️⃣ GSTR-1 EXCEL PARSER (FORMAT-LOCKED & CORRECT)
 # --------------------------------------------------
 def parse_gstr1_excel(file):
-    df = pd.read_excel(file)
+    xls = pd.ExcelFile(file)
 
     totals = {
         "total_taxable_value": 0.0,
@@ -95,76 +97,71 @@ def parse_gstr1_excel(file):
         "advances_adjusted": 0.0
     }
 
-    for col in df.columns:
-        c = col.lower()
+    # HSN SUMMARY
+    if "hsn" in xls.sheet_names:
+        df_hsn = pd.read_excel(xls, sheet_name="hsn", header=None)
 
-        series = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        totals["total_invoice_value"] = float(df_hsn.iloc[1, 3])
+        totals["total_taxable_value"] = float(df_hsn.iloc[1, 4])
+        totals["igst_amount"] = float(df_hsn.iloc[1, 6])
+        totals["cgst_amount"] = float(df_hsn.iloc[1, 7])
+        totals["sgst_amount"] = float(df_hsn.iloc[1, 8])
+        totals["total_cess"] = float(df_hsn.iloc[1, 9])
 
-        if "taxable" in c:
-            totals["total_taxable_value"] += series.sum()
-        if "cgst" in c:
-            totals["cgst_amount"] += series.sum()
-        if "sgst" in c:
-            totals["sgst_amount"] += series.sum()
-        if "igst" in c:
-            totals["igst_amount"] += series.sum()
-        if "cess" in c:
-            totals["total_cess"] += series.sum()
-        if "invoice" in c and "value" in c:
-            totals["total_invoice_value"] += series.sum()
-        if "exempt" in c or "non gst" in c:
-            totals["exempted_non_gst"] += series.sum()
-        if "advance" in c:
-            totals["advances_adjusted"] += series.sum()
+    # B2B SUMMARY
+    if "b2b" in xls.sheet_names:
+        df_b2b = pd.read_excel(xls, sheet_name="b2b", header=None)
+        totals["b2b_taxable_value"] = float(df_b2b.iloc[1, 11])
 
-    totals["b2b_taxable_value"] = totals["total_taxable_value"]
+    # EXEMPT / NON-GST
+    if "exemp" in xls.sheet_names:
+        df_ex = pd.read_excel(xls, sheet_name="exemp", header=None)
+        totals["exempted_non_gst"] = float(df_ex.iloc[1, 3])
+
+    # ADVANCE ADJUSTED
+    if "atadj" in xls.sheet_names:
+        df_adv = pd.read_excel(xls, sheet_name="atadj", header=None)
+        totals["advances_adjusted"] = float(df_adv.iloc[1, 3])
 
     return {k: round(v, 2) for k, v in totals.items()}
 
 # --------------------------------------------------
-# 7️⃣ GST PDF PARSING (REAL, PAGE-WISE)
+# 7️⃣ GST PDF PARSER (INTENTIONALLY PENDING)
 # --------------------------------------------------
-def extract_amount(pattern, text):
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        return float(match.group(1).replace(",", ""))
-    return 0.0
-
-def parse_gst_pdf(file):
-    totals = {
-        "total_taxable_value": 0.0,
-        "b2b_taxable_value": 0.0,
-        "cgst_amount": 0.0,
-        "sgst_amount": 0.0,
-        "igst_amount": 0.0,
-        "total_cess": 0.0,
-        "total_invoice_value": 0.0,
-        "exempted_non_gst": 0.0,
-        "advances_adjusted": 0.0
+def parse_gst_pdf(_file):
+    """
+    PDF table extraction will be added later (Camelot / Tabula).
+    Returning None avoids false 'Matched = 0' results.
+    """
+    return {
+        "total_taxable_value": None,
+        "b2b_taxable_value": None,
+        "cgst_amount": None,
+        "sgst_amount": None,
+        "igst_amount": None,
+        "total_cess": None,
+        "total_invoice_value": None,
+        "exempted_non_gst": None,
+        "advances_adjusted": None
     }
 
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-
-            totals["total_taxable_value"] += extract_amount(r"Taxable Value\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["cgst_amount"] += extract_amount(r"CGST\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["sgst_amount"] += extract_amount(r"SGST\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["igst_amount"] += extract_amount(r"IGST\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["total_cess"] += extract_amount(r"Cess\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["total_invoice_value"] += extract_amount(r"Total Invoice Value\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["exempted_non_gst"] += extract_amount(r"Exempt\s*₹?\s*([\d,]+\.\d+)", text)
-            totals["advances_adjusted"] += extract_amount(r"Advance\s*Adjusted\s*₹?\s*([\d,]+\.\d+)", text)
-
-    totals["b2b_taxable_value"] = totals["total_taxable_value"]
-
-    return {k: round(v, 2) for k, v in totals.items()}
-
 # --------------------------------------------------
-# 8️⃣ RUN PARSERS
+# 8️⃣ PROCESSING STATE
 # --------------------------------------------------
-excel_totals = parse_gstr1_excel(gstr1_file)
-pdf_totals = parse_gst_pdf(gst_pdf_file)
+with st.spinner("🔄 Reconciling GSTR-1 with GST Export… Please wait"):
+    progress = st.progress(0)
+
+    progress.progress(20)
+    excel_totals = parse_gstr1_excel(gstr1_file)
+
+    progress.progress(60)
+    pdf_totals = parse_gst_pdf(gst_pdf_file)
+
+    progress.progress(100)
+
+st.success("✅ Reconciliation completed")
+
+st.divider()
 
 # --------------------------------------------------
 # 9️⃣ BUILD RECON TABLE
@@ -174,20 +171,23 @@ rows = []
 for comp in config["reconciliation_components"]:
     key = comp["key"]
 
-    excel_value = excel_totals.get(key, 0)
-    pdf_value = pdf_totals.get(key, 0)
+    excel_value = excel_totals.get(key)
+    pdf_value = pdf_totals.get(key)
 
-    discrepancy = round(abs(excel_value - pdf_value), 2)
-
-    if comp["match_type"] == "exact":
-        status = "Matched" if discrepancy == 0 else "Difference"
+    if pdf_value is None:
+        status = "Pending PDF Mapping"
+        discrepancy = ""
     else:
-        status = "Difference" if discrepancy != 0 else "Matched"
+        discrepancy = round(abs(excel_value - pdf_value), 2)
+        if comp["match_type"] == "exact":
+            status = "Matched" if discrepancy == 0 else "Difference"
+        else:
+            status = "Difference" if discrepancy != 0 else "Matched"
 
     rows.append([
         comp["label"],
         excel_value,
-        pdf_value,
+        pdf_value if pdf_value is not None else "—",
         comp["logic"],
         status,
         discrepancy
@@ -202,7 +202,7 @@ st.subheader("Reconciliation Summary")
 st.dataframe(df, use_container_width=True)
 
 st.subheader("Explanation Notes")
-st.info(config["explanation_templates"]["matched"])
-st.warning(config["explanation_templates"]["difference_allowed"])
+st.info("Matched → Excel and PDF values are identical.")
+st.warning("Pending PDF Mapping → PDF extraction logic will be added next.")
 
-st.success(config["audit_note"])
+st.success("Reconciliation is generated dynamically per hotel and per month.")
