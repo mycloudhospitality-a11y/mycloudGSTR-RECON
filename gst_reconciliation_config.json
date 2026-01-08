@@ -1,1 +1,88 @@
-gst_reconciliation_config.json
+{
+  "app_meta": {
+    "app_name": "mycloud GSTR-1 vs GST Export Reconciliation",
+    "version": "1.0",
+    "currency": "INR",
+    "currency_symbol": "₹"
+  },
+  "inputs": {
+    "required_files": [
+      {
+        "key": "gstr1_excel",
+        "label": "Upload GSTR-1 Excel / CSV",
+        "file_types": ["csv", "xlsx"],
+        "mandatory": true
+      },
+      {
+        "key": "gst_export_pdf",
+        "label": "Upload GST Export PDF",
+        "file_types": ["pdf"],
+        "mandatory": true
+      }
+    ]
+  },
+  "reconciliation_rules": [
+    {
+      "component": "Total Taxable Value",
+      "formula_logic": "Aggregated HSN Taxable Value",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "B2B Taxable Value",
+      "formula_logic": "Total of all Registered (B2B) Invoices",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "CGST Amount",
+      "formula_logic": "Total Central GST Liability",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "SGST Amount",
+      "formula_logic": "Total State GST Liability",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "IGST Amount",
+      "formula_logic": "Total Integrated GST Liability",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "Total Cess",
+      "formula_logic": "Total Luxury / Additional Cess",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "Total Invoice Value",
+      "formula_logic": "Gross Invoice Value including Taxes",
+      "status_rule": "Must Match"
+    },
+    {
+      "component": "Exempted / Non-GST",
+      "formula_logic": "Non-taxable / Exempt Supplies",
+      "status_rule": "Difference Allowed"
+    },
+    {
+      "component": "Advances Adjusted",
+      "formula_logic": "Tax paid in Advance adjusted against Invoices",
+      "status_rule": "Difference Allowed"
+    }
+  ],
+  "output_table": {
+    "columns": [
+      "Component",
+      "GSTR-1 Excel Value (₹)",
+      "PDF Export Value (₹)",
+      "Formula / Logic Used",
+      "Status",
+      "Discrepancy (₹)"
+    ],
+    "rounding": 2
+  },
+  "explanation_notes": {
+    "matched": "All tax-impacting values are perfectly reconciled between GSTR-1 and GST Export. No corrective action is required.",
+    "exempted_difference": "Differences in Exempted / Non-GST values arise due to non-taxable supplies, threshold exemptions, reimbursements, or disclosure differences. These do not impact GST liability.",
+    "advance_difference": "Differences in Advances Adjusted are timing-related and occur due to advance receipts being adjusted in subsequent periods."
+  },
+  "final_conclusion": "All tax-impacting components are fully reconciled. Differences exist only in disclosure-level items, which are explainable, non-impacting, and audit-safe."
+}
