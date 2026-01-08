@@ -2,72 +2,84 @@
   "app_meta": {
     "app_name": "mycloud GSTR-1 vs GST Export Reconciliation",
     "version": "1.0",
-    "currency": "INR",
-    "currency_symbol": "₹"
+    "scope": "Multi-hotel | Multi-month | File-driven"
   },
-  "inputs": {
-    "required_files": [
-      {
-        "key": "gstr1_excel",
-        "label": "Upload GSTR-1 Excel / CSV",
-        "file_types": ["csv", "xlsx"],
-        "mandatory": true
-      },
-      {
-        "key": "gst_export_pdf",
-        "label": "Upload GST Export PDF",
-        "file_types": ["pdf"],
-        "mandatory": true
-      }
-    ]
-  },
-  "reconciliation_rules": [
+
+  "reconciliation_components": [
     {
-      "component": "Total Taxable Value",
-      "formula_logic": "Aggregated HSN Taxable Value",
-      "status_rule": "Must Match"
+      "key": "total_taxable_value",
+      "label": "Total Taxable Value",
+      "excel_source": "HSN.taxable_value",
+      "pdf_source": "HSN.taxable_value",
+      "match_type": "exact",
+      "logic": "Aggregated HSN taxable value"
     },
     {
-      "component": "B2B Taxable Value",
-      "formula_logic": "Total of all Registered (B2B) Invoices",
-      "status_rule": "Must Match"
+      "key": "b2b_taxable_value",
+      "label": "B2B Taxable Value",
+      "excel_source": "B2B.taxable_value",
+      "pdf_source": "Registered_Invoices.taxable_value",
+      "match_type": "exact",
+      "logic": "Total of registered (B2B) invoices"
     },
     {
-      "component": "CGST Amount",
-      "formula_logic": "Total Central GST Liability",
-      "status_rule": "Must Match"
+      "key": "cgst_amount",
+      "label": "CGST Amount",
+      "excel_source": "CGST.amount",
+      "pdf_source": "CGST.amount",
+      "match_type": "exact",
+      "logic": "Total Central GST liability"
     },
     {
-      "component": "SGST Amount",
-      "formula_logic": "Total State GST Liability",
-      "status_rule": "Must Match"
+      "key": "sgst_amount",
+      "label": "SGST Amount",
+      "excel_source": "SGST.amount",
+      "pdf_source": "SGST.amount",
+      "match_type": "exact",
+      "logic": "Total State GST liability"
     },
     {
-      "component": "IGST Amount",
-      "formula_logic": "Total Integrated GST Liability",
-      "status_rule": "Must Match"
+      "key": "igst_amount",
+      "label": "IGST Amount",
+      "excel_source": "IGST.amount",
+      "pdf_source": "IGST.amount",
+      "match_type": "exact",
+      "logic": "Total Integrated GST liability"
     },
     {
-      "component": "Total Cess",
-      "formula_logic": "Total Luxury / Additional Cess",
-      "status_rule": "Must Match"
+      "key": "total_cess",
+      "label": "Total Cess",
+      "excel_source": "CESS.amount",
+      "pdf_source": "CESS.amount",
+      "match_type": "exact",
+      "logic": "Total luxury / additional cess"
     },
     {
-      "component": "Total Invoice Value",
-      "formula_logic": "Gross Invoice Value including Taxes",
-      "status_rule": "Must Match"
+      "key": "total_invoice_value",
+      "label": "Total Invoice Value",
+      "excel_source": "Invoice.total_value",
+      "pdf_source": "Invoice.total_value",
+      "match_type": "exact",
+      "logic": "Gross invoice value including taxes"
     },
     {
-      "component": "Exempted / Non-GST",
-      "formula_logic": "Non-taxable / Exempt Supplies",
-      "status_rule": "Difference Allowed"
+      "key": "exempted_non_gst",
+      "label": "Exempted / Non-GST",
+      "excel_source": "Exempt.non_gst_value",
+      "pdf_source": "Non_Taxable.supplies",
+      "match_type": "difference_allowed",
+      "logic": "Non-taxable / exempt supplies"
     },
     {
-      "component": "Advances Adjusted",
-      "formula_logic": "Tax paid in Advance adjusted against Invoices",
-      "status_rule": "Difference Allowed"
+      "key": "advances_adjusted",
+      "label": "Advances Adjusted",
+      "excel_source": "Advances.adjusted",
+      "pdf_source": "Advance.adjustments",
+      "match_type": "difference_allowed",
+      "logic": "Advance receipts adjusted against invoices"
     }
   ],
+
   "output_table": {
     "columns": [
       "Component",
@@ -76,13 +88,18 @@
       "Formula / Logic Used",
       "Status",
       "Discrepancy (₹)"
-    ],
-    "rounding": 2
+    ]
   },
-  "explanation_notes": {
-    "matched": "All tax-impacting values are perfectly reconciled between GSTR-1 and GST Export. No corrective action is required.",
-    "exempted_difference": "Differences in Exempted / Non-GST values arise due to non-taxable supplies, threshold exemptions, reimbursements, or disclosure differences. These do not impact GST liability.",
-    "advance_difference": "Differences in Advances Adjusted are timing-related and occur due to advance receipts being adjusted in subsequent periods."
+
+  "status_rules": {
+    "exact": "Matched if Excel value equals PDF value",
+    "difference_allowed": "Difference allowed but highlighted"
   },
-  "final_conclusion": "All tax-impacting components are fully reconciled. Differences exist only in disclosure-level items, which are explainable, non-impacting, and audit-safe."
+
+  "explanation_templates": {
+    "matched": "Values are fully reconciled. No action required.",
+    "difference_allowed": "Difference observed due to timing or disclosure differences. No GST impact."
+  },
+
+  "audit_note": "Reconciliation is generated dynamically based on uploaded files. No data is reused across hotels or periods."
 }
