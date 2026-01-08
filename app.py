@@ -5,6 +5,7 @@ import os
 from io import BytesIO
 import re
 import pdfplumber
+import time
 
 # --------------------------------------------------
 # 1️⃣ PAGE CONFIG
@@ -15,18 +16,13 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# 2️⃣ LOAD CONFIG SAFELY
+# 2️⃣ LOAD CONFIG
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(BASE_DIR, "gst_reconciliation_config.json")
 
-try:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        config = json.load(f)
-except Exception as e:
-    st.error("❌ Failed to load gst_reconciliation_config.json")
-    st.exception(e)
-    st.stop()
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    config = json.load(f)
 
 # --------------------------------------------------
 # 3️⃣ HEADER
@@ -72,7 +68,7 @@ st.success("Files accepted successfully")
 st.divider()
 
 # --------------------------------------------------
-# 6️⃣ SAFE HELPERS
+# 6️⃣ HELPERS
 # --------------------------------------------------
 def safe_number(value):
     try:
@@ -85,7 +81,7 @@ def safe_number(value):
         return 0.0
 
 # --------------------------------------------------
-# 7️⃣ SAFE METADATA EXTRACTION
+# 7️⃣ METADATA EXTRACTION
 # --------------------------------------------------
 def extract_metadata(file):
     xls = pd.ExcelFile(file)
@@ -97,23 +93,21 @@ def extract_metadata(file):
     for i in range(min(20, rows)):
         for j in range(min(10, cols)):
             cell = str(df.iloc[i, j]).lower()
-
             if "gstin" in cell and j + 1 < cols:
                 gstin = str(df.iloc[i, j + 1]).strip()
-
             if ("legal name" in cell or "trade name" in cell) and j + 1 < cols:
                 hotel = str(df.iloc[i, j + 1]).strip()
-
             if "return period" in cell and j + 1 < cols:
                 period = str(df.iloc[i, j + 1]).strip()
 
     return hotel, gstin, period
 
 # --------------------------------------------------
-# 8️⃣ GSTR-1 EXCEL PARSER (ROBUST)
+# 8️⃣ GSTR-1 EXCEL PARSER
 # --------------------------------------------------
 def parse_gstr1_excel(file):
     xls = pd.ExcelFile(file)
+    totals = dict.fromkeys(config["reconciliation_components"][0].keys(), 0)
 
     totals = {
         "total_taxable_value": 0.0,
@@ -148,16 +142,12 @@ def parse_gstr1_excel(file):
         df = pd.read_excel(xls, "atadj", header=None)
         totals["advances_adjusted"] = safe_number(df.iloc[1, 3])
 
-    return {k: round(v, 2) for k, v in totals.items()}
+    return totals
 
 # --------------------------------------------------
-# 9️⃣ PDF PARSER (CLOUD-SAFE)
+# 9️⃣ PDF PARSER WITH PAGE-LEVEL PROGRESS
 # --------------------------------------------------
-def extract_amount(pattern, text):
-    match = re.search(pattern, text, re.IGNORECASE)
-    return safe_number(match.group(1)) if match else 0.0
-
-def parse_gst_pdf(file):
+def parse_gst_pdf(file, progress_bar):
     totals = {
         "total_taxable_value": 0.0,
         "b2b_taxable_value": 0.0,
@@ -171,13 +161,44 @@ def parse_gst_pdf(file):
     }
 
     with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
+        total_pages = len(pdf.pages)
+
+        for i, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
-            totals["total_taxable_value"] += extract_amount(r"taxable value\s*([\d,\.]+)", text)
-            totals["cgst_amount"] += extract_amount(r"cgst\s*([\d,\.]+)", text)
-            totals["sgst_amount"] += extract_amount(r"sgst\s*([\d,\.]+)", text)
-            totals["igst_amount"] += extract_amount(r"igst\s*([\d,\.]+)", text)
-            totals["total_cess"] += extract_amount(r"cess\s*([\d,\.]+)", text)
+
+            totals["total_taxable_value"] += safe_number(
+                re.search(r"taxable value\s*([\d,\.]+)", text, re.I).group(1)
+                if re.search(r"taxable value\s*([\d,\.]+)", text, re.I)
+                else 0
+            )
+
+            totals["cgst_amount"] += safe_number(
+                re.search(r"cgst\s*([\d,\.]+)", text, re.I).group(1)
+                if re.search(r"cgst\s*([\d,\.]+)", text, re.I)
+                else 0
+            )
+
+            totals["sgst_amount"] += safe_number(
+                re.search(r"sgst\s*([\d,\.]+)", text, re.I).group(1)
+                if re.search(r"sgst\s*([\d,\.]+)", text, re.I)
+                else 0
+            )
+
+            totals["igst_amount"] += safe_number(
+                re.search(r"igst\s*([\d,\.]+)", text, re.I).group(1)
+                if re.search(r"igst\s*([\d,\.]+)", text, re.I)
+                else 0
+            )
+
+            totals["total_cess"] += safe_number(
+                re.search(r"cess\s*([\d,\.]+)", text, re.I).group(1)
+                if re.search(r"cess\s*([\d,\.]+)", text, re.I)
+                else 0
+            )
+
+            # Update progress: PDF parsing occupies 40–80%
+            progress_bar.progress(40 + int((i + 1) / total_pages * 40))
+            time.sleep(0.02)  # smooth UI
 
     totals["b2b_taxable_value"] = totals["total_taxable_value"]
     totals["total_invoice_value"] = (
@@ -188,17 +209,35 @@ def parse_gst_pdf(file):
         + totals["total_cess"]
     )
 
-    return {k: round(v, 2) for k, v in totals.items()}
+    return totals
 
 # --------------------------------------------------
-# 🔟 PROCESSING
+# 🔟 PROCESSING WITH PROGRESS BAR
 # --------------------------------------------------
-with st.spinner("🔄 Reconciling GSTR-1 with GST Export… Please wait"):
+st.subheader("Processing Status")
+
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+with st.spinner("Reconciling GSTR-1 with GST Export…"):
+    status_text.text("🔍 Reading hotel metadata…")
     hotel, gstin, period = extract_metadata(gstr1_file)
-    excel_totals = parse_gstr1_excel(gstr1_file)
-    pdf_totals = parse_gst_pdf(gst_pdf_file)
+    progress_bar.progress(10)
 
-st.success("✅ Reconciliation completed")
+    status_text.text("📊 Parsing GSTR-1 Excel…")
+    excel_totals = parse_gstr1_excel(gstr1_file)
+    progress_bar.progress(40)
+
+    status_text.text("📄 Parsing GST Export PDF…")
+    pdf_totals = parse_gst_pdf(gst_pdf_file, progress_bar)
+
+    status_text.text("🧮 Building reconciliation table…")
+    progress_bar.progress(90)
+    time.sleep(0.2)
+
+progress_bar.progress(100)
+status_text.text("✅ Reconciliation completed")
+
 st.divider()
 
 # --------------------------------------------------
@@ -236,7 +275,7 @@ st.subheader("Reconciliation Summary")
 st.dataframe(df, use_container_width=True)
 
 # --------------------------------------------------
-# 13️⃣ DOWNLOAD
+# 13️⃣ DOWNLOAD EXCEL
 # --------------------------------------------------
 def build_download(df):
     buffer = BytesIO()
