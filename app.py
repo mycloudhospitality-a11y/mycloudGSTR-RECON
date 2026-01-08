@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# 2️⃣ LOAD JSON CONFIG
+# 2️⃣ LOAD CONFIG
 # --------------------------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(BASE_DIR, "gst_reconciliation_config.json")
@@ -73,29 +73,39 @@ st.success("Files accepted successfully")
 st.divider()
 
 # --------------------------------------------------
-# 6️⃣ METADATA EXTRACTION (HOTEL, GSTIN, PERIOD)
+# 6️⃣ SAFE METADATA EXTRACTION
 # --------------------------------------------------
 def extract_metadata(file):
     xls = pd.ExcelFile(file)
     df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=None)
 
-    hotel, gstin, period = "Unknown", "Unknown", "Unknown"
+    hotel = "Unknown"
+    gstin = "Unknown"
+    period = "Unknown"
 
-    for i in range(10):
-        for j in range(6):
-            cell = str(df.iloc[i, j]).lower()
+    max_rows, max_cols = df.shape
 
-            if "legal name" in cell or "trade name" in cell:
-                hotel = str(df.iloc[i, j + 1]).strip()
-            if "gstin" in cell:
-                gstin = str(df.iloc[i, j + 1]).strip()
-            if "return period" in cell:
-                period = str(df.iloc[i, j + 1]).strip()
+    for i in range(min(15, max_rows)):
+        for j in range(min(10, max_cols)):
+            try:
+                cell = str(df.iloc[i, j]).lower()
+
+                if "gstin" in cell and j + 1 < max_cols:
+                    gstin = str(df.iloc[i, j + 1]).strip()
+
+                if ("legal name" in cell or "trade name" in cell) and j + 1 < max_cols:
+                    hotel = str(df.iloc[i, j + 1]).strip()
+
+                if "return period" in cell and j + 1 < max_cols:
+                    period = str(df.iloc[i, j + 1]).strip()
+
+            except Exception:
+                continue
 
     return hotel, gstin, period
 
 # --------------------------------------------------
-# 7️⃣ GSTR-1 EXCEL PARSER (FORMAT-LOCKED)
+# 7️⃣ GSTR-1 EXCEL PARSER (YOUR FORMAT)
 # --------------------------------------------------
 def parse_gstr1_excel(file):
     xls = pd.ExcelFile(file)
@@ -136,21 +146,29 @@ def parse_gstr1_excel(file):
     return {k: round(v, 2) for k, v in totals.items()}
 
 # --------------------------------------------------
-# 8️⃣ BASIC PDF VALUE EXTRACTION (TEXT-BASED)
+# 8️⃣ SAFE PDF TEXT EXTRACTION (NO FAKE MATCHING)
 # --------------------------------------------------
 def extract_amount(pattern, text):
     match = re.search(pattern, text, re.IGNORECASE)
     return float(match.group(1).replace(",", "")) if match else 0.0
 
 def parse_gst_pdf(file):
-    totals = {k: 0.0 for k in [
-        "total_taxable_value", "cgst_amount", "sgst_amount",
-        "igst_amount", "total_cess"
-    ]}
+    totals = {
+        "total_taxable_value": 0.0,
+        "b2b_taxable_value": 0.0,
+        "cgst_amount": 0.0,
+        "sgst_amount": 0.0,
+        "igst_amount": 0.0,
+        "total_cess": 0.0,
+        "total_invoice_value": 0.0,
+        "exempted_non_gst": 0.0,
+        "advances_adjusted": 0.0
+    }
 
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
+
             totals["total_taxable_value"] += extract_amount(r"taxable value\s*₹?\s*([\d,]+\.\d+)", text)
             totals["cgst_amount"] += extract_amount(r"cgst\s*₹?\s*([\d,]+\.\d+)", text)
             totals["sgst_amount"] += extract_amount(r"sgst\s*₹?\s*([\d,]+\.\d+)", text)
@@ -171,7 +189,7 @@ def parse_gst_pdf(file):
 # --------------------------------------------------
 # 9️⃣ PROCESSING STATE
 # --------------------------------------------------
-with st.spinner("🔄 Reconciling data… Please wait"):
+with st.spinner("🔄 Reconciling GSTR-1 with GST Export… Please wait"):
     hotel, gstin, period = extract_metadata(gstr1_file)
     excel_totals = parse_gstr1_excel(gstr1_file)
     pdf_totals = parse_gst_pdf(gst_pdf_file)
@@ -180,7 +198,7 @@ st.success("✅ Reconciliation completed")
 st.divider()
 
 # --------------------------------------------------
-# 🔟 HEADER INFO
+# 🔟 DISPLAY METADATA
 # --------------------------------------------------
 st.subheader("Hotel Details")
 st.write(f"**Hotel Name:** {hotel}")
@@ -188,7 +206,7 @@ st.write(f"**GSTIN:** {gstin}")
 st.write(f"**Return Period:** {period}")
 
 # --------------------------------------------------
-# 11️⃣ BUILD RECON TABLE
+# 11️⃣ BUILD RECONCILIATION TABLE
 # --------------------------------------------------
 rows = []
 
@@ -218,15 +236,15 @@ st.dataframe(df, use_container_width=True)
 # --------------------------------------------------
 # 12️⃣ DOWNLOAD RECONCILIATION EXCEL
 # --------------------------------------------------
-def download_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+def build_download(df):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Reconciliation")
-    return output.getvalue()
+    return buffer.getvalue()
 
 st.download_button(
     "⬇️ Download Reconciliation Excel",
-    data=download_excel(df),
+    data=build_download(df),
     file_name=f"GSTR_Reconciliation_{gstin}_{period}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
